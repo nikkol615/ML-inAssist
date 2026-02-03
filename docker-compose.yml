@@ -1,10 +1,28 @@
 version: '3.8'
 
 services:
+  # Сервис для скачивания модели при первом запуске
+  model-downloader:
+    image: curlimages/curl:latest
+    volumes:
+      - ./models:/models
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        MODEL_FILE="/models/Meta-Llama-3-8B-Instruct.Q4_K_M.gguf"
+        MODEL_URL="https://huggingface.co/bartowski/Meta-Llama-3-8B-Instruct-GGUF/resolve/main/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf"
+        if [ -f "$$MODEL_FILE" ]; then
+          echo "Model already exists, skipping download"
+        else
+          echo "Downloading model from HuggingFace..."
+          curl -L -o "$$MODEL_FILE" "$$MODEL_URL"
+          echo "Model downloaded successfully"
+        fi
+
   ml-service:
     build: .
     ports:
-      - "8000:8000"
+      - "3000:3000"
     environment:
       # Local LLM Mode (Llama) - требует 8GB+ RAM
       - USE_LOCAL_LLM=true
@@ -19,8 +37,12 @@ services:
       - ./training_data.csv:/app/training_data.csv
       - whisper_cache:/root/.cache/huggingface
     
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+    
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
       interval: 30s
       timeout: 10s
       retries: 5

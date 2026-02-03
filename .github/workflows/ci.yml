@@ -2,6 +2,11 @@ name: CI
 on: [push]
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - run: date
+      - uses: actions/checkout@v4
+      - name: Display current time
+        run: |
+          echo "Current UTC time: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "Current local time: $(date '+%Y-%m-%d %H:%M:%S %Z')"
+          echo "Timestamp: $(date +%s)"
