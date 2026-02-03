@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  ml-service:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      # Local LLM Mode (Llama) - требует 8GB+ RAM
+      - USE_LOCAL_LLM=true
+      - LOCAL_MODEL_PATH=/app/models/Meta-Llama-3-8B-Instruct.Q4_K_M.gguf
+      
+      # API Mode (Groq)
+      # - GROQ_API_KEY=${GROQ_API_KEY}
+      # - USE_LOCAL_LLM=false
+    
+    volumes:
+      - ./models:/app/models:ro
+      - ./training_data.csv:/app/training_data.csv
+      - whisper_cache:/root/.cache/huggingface
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+        reservations:
+          memory: 4G
+
+volumes:
+  whisper_cache:
