@@ -27,7 +27,8 @@ RUN mkdir -p /app/models
 # Переменные окружения
 ENV USE_LOCAL_LLM=true
 ENV LOCAL_MODEL_PATH=/app/models/Meta-Llama-3-8B-Instruct.Q4_K_M.gguf
+ENV PYTHONUNBUFFERED=1
 
 EXPOSE 3000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "3000"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "3000", "--log-level", "info"]

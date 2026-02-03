@@ -62,12 +62,16 @@ class LLMService:
             )
             
             if Llama is None:
-                logger.error("no llama-cpp")
+                logger.error("❌ llama-cpp-python not installed")
             elif not os.path.exists(model_path):
-                logger.error(f"model not found: {model_path}")
+                logger.error(f"❌ Model file not found: {model_path}")
+                logger.error("   Make sure the model was downloaded by model-downloader")
             else:
                 try:
-                    logger.info(f"loading {model_path}")
+                    model_size_gb = os.path.getsize(model_path) / (1024**3)
+                    logger.info(f"🔄 Loading LLM model ({model_size_gb:.1f}GB): {model_path}")
+                    logger.info("   This may take 1-3 minutes on first load...")
+                    start_time = time.time()
                     self.local_model = Llama(
                         model_path=model_path,
                         n_ctx=4096,   # Размер контекстного окна (макс. токенов в диалоге)
@@ -75,9 +79,10 @@ class LLMService:
                         n_gpu_layers=0,  # 0 = CPU, >0 = слои на GPU, -1 = всё на GPU
                         verbose=False
                     )
-                    logger.info("local llm ready")
+                    load_time = time.time() - start_time
+                    logger.info(f"✓ LLM model loaded successfully in {load_time:.1f}s")
                 except Exception as e:
-                    logger.error(f"llm load failed: {e}")
+                    logger.error(f"❌ LLM load failed: {e}")
         else:
             self.api_key = os.getenv("GROQ_API_KEY")
             
