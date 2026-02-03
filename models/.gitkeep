@@ -1,0 +1,2 @@
+# This directory stores LLM model files
+# The model will be downloaded automatically on first docker-compose up

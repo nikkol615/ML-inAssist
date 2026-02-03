@@ -3,7 +3,7 @@ version: '3.8'
 services:
   # Сервис для скачивания модели при первом запуске
   model-downloader:
-    image: curlimages/curl:latest
+    image: alpine:latest
     volumes:
       - ./models:/models
     entrypoint: ["/bin/sh", "-c"]
@@ -11,11 +11,20 @@ services:
       - |
         MODEL_FILE="/models/Meta-Llama-3-8B-Instruct.Q4_K_M.gguf"
         MODEL_URL="https://huggingface.co/bartowski/Meta-Llama-3-8B-Instruct-GGUF/resolve/main/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf"
+        
+
+        apk add --no-cache curl
+        
+
+        mkdir -p /models
+        chmod 777 /models
+        
         if [ -f "$$MODEL_FILE" ]; then
           echo "Model already exists, skipping download"
         else
-          echo "Downloading model from HuggingFace..."
-          curl -L -o "$$MODEL_FILE" "$$MODEL_URL"
+          echo "Downloading model from HuggingFace (~4.9GB)..."
+          curl -L --progress-bar -o "$$MODEL_FILE" "$$MODEL_URL"
+          chmod 644 "$$MODEL_FILE"
           echo "Model downloaded successfully"
         fi
 
