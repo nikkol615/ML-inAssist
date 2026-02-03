@@ -1,7 +1,6 @@
 version: '3.8'
 
 services:
-  # Сервис для скачивания модели при первом запуске (запускается один раз)
   model-downloader:
     image: alpine:latest
     restart: "no"
@@ -45,7 +44,7 @@ services:
     
     volumes:
       - ./models:/app/models:ro
-      - ./training_data.csv:/app/training_data.csv
+      - training_data:/app/data
       - whisper_cache:/root/.cache/huggingface
     
     depends_on:
@@ -68,3 +67,4 @@ services:
 
 volumes:
   whisper_cache:
+  training_data:

@@ -146,8 +146,9 @@ async def retrain_ranking_model():
 async def model_status():
     """Возвращает статус ML-ранкера: активен ли, сколько примеров собрано."""
     sample_count = 0
+    data_file = "/app/data/training_data.csv" if os.path.exists("/app/data") else "training_data.csv"
     try:
-        with open("training_data.csv", "r") as f:
+        with open(data_file, "r") as f:
             sample_count = sum(1 for _ in f) - 1  # Минус заголовок
     except (FileNotFoundError, IOError):
         pass

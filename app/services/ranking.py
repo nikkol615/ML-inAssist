@@ -36,8 +36,10 @@ from app.schemas import CandidateSlot, UserContext
 logger = logging.getLogger("ml_ranking")
 logger.setLevel(logging.INFO)
 
-DATASET_FILE = "training_data.csv"
-MODEL_FILE = "ranking_model.pkl"
+
+DATA_DIR = "/app/data" if os.path.exists("/app/data") else "."
+DATASET_FILE = os.path.join(DATA_DIR, "training_data.csv")
+MODEL_FILE = os.path.join(DATA_DIR, "ranking_model.pkl")
 MIN_SAMPLES_TO_TRAIN = 20
 
 
