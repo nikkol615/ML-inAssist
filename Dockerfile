@@ -3,8 +3,9 @@ FROM python:3.11-slim-bookworm
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get -o Acquire::Retries=5 update && apt-get install -y --fix-missing --no-install-recommends \
     ffmpeg \
+    curl \
     build-essential \
     cmake \
     && rm -rf /var/lib/apt/lists/*

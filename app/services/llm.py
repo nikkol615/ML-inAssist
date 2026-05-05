@@ -5,10 +5,6 @@
  Дата: 2026-01-31
 """
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# ИМПОРТЫ
-# ═══════════════════════════════════════════════════════════════════════════════
-
 import json
 import os
 import logging
@@ -30,62 +26,53 @@ from pydantic import ValidationError
 
 from app.schemas import (
     AnalyzeRequest, AnalyzeResponse, ExecuteRequest, MLResponse,
-    ToolName, DataRequirementType, RankedSlotParams, SplitTaskParams
+    ToolName, DataRequirementType, RankedSlotParams, SplitTaskParams,
+    CreateEventParams, UpdateEventParams, DeleteEventParams
 )
 from app.services.ranking import RankingService
 import app.prompts as p
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# КОНФИГУРАЦИЯ
-# ═══════════════════════════════════════════════════════════════════════════════
 
 logger = logging.getLogger("ml_llm")
 logger.setLevel(logging.INFO)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# КЛАСС LLMService
-# ═══════════════════════════════════════════════════════════════════════════════
-
 class LLMService:
     def __init__(self):
-        # Определяем режим: локальная модель или API
         self.use_local = os.getenv("USE_LOCAL_LLM", "false").lower() == "true"
         self.local_model = None
         self.client = None
-        
+
         if self.use_local:
             model_path = os.getenv(
-                "LOCAL_MODEL_PATH", 
+                "LOCAL_MODEL_PATH",
                 "/app/models/Meta-Llama-3-8B-Instruct.Q4_K_M.gguf"
             )
-            
+
             if Llama is None:
-                logger.error("❌ llama-cpp-python not installed")
+                logger.error("llama-cpp-python not installed")
             elif not os.path.exists(model_path):
-                logger.error(f"❌ Model file not found: {model_path}")
+                logger.error(f"Model file not found: {model_path}")
                 logger.error("   Make sure the model was downloaded by model-downloader")
             else:
                 try:
-                    model_size_gb = os.path.getsize(model_path) / (1024**3)
-                    logger.info(f"🔄 Loading LLM model ({model_size_gb:.1f}GB): {model_path}")
+                    model_size_gb = os.path.getsize(model_path) / (1024 ** 3)
+                    logger.info(f"Loading LLM model ({model_size_gb:.1f}GB): {model_path}")
                     logger.info("   This may take 1-3 minutes on first load...")
                     start_time = time.time()
                     self.local_model = Llama(
                         model_path=model_path,
-                        n_ctx=4096,   # Размер контекстного окна (макс. токенов в диалоге)
-                        n_threads=4,  # CPU потоки для параллельной обработки
-                        n_gpu_layers=0,  # 0 = CPU, >0 = слои на GPU, -1 = всё на GPU
+                        n_ctx=4096,
+                        n_threads=4,
+                        n_gpu_layers=0,
                         verbose=False
                     )
                     load_time = time.time() - start_time
-                    logger.info(f"✓ LLM model loaded successfully in {load_time:.1f}s")
+                    logger.info(f"LLM model loaded successfully in {load_time:.1f}s")
                 except Exception as e:
-                    logger.error(f"❌ LLM load failed: {e}")
+                    logger.error(f"LLM load failed: {e}")
         else:
             self.api_key = os.getenv("GROQ_API_KEY")
-            
+
             if Groq and self.api_key:
                 try:
                     self.client = Groq(api_key=self.api_key)
@@ -97,10 +84,9 @@ class LLMService:
                 logger.warning("no api key")
 
         self.ranker = RankingService()
-        
+
         self.max_retries = 1
-        
-        # JSON грамматика для llama-cpp
+
         self.json_grammar = None
         if self.use_local and self.local_model:
             try:
@@ -127,13 +113,9 @@ ws ::= [ \t\n\r]*
             except Exception as e:
                 logger.warning(f"JSON grammar failed: {e}, using fallback")
 
-    # -------------------------------------------------------------------------
-    # ВЗАИМОДЕЙСТВИЕ С МОДЕЛИ
-    # -------------------------------------------------------------------------
-
     def _call_model(self, system_text: str, user_text: str, retry_count: int = 0) -> Optional[Dict[str, Any]]:
         result = None
-        
+
         if self.use_local and self.local_model:
             result = self._call_local_model(system_text, user_text)
         elif self.client:
@@ -141,21 +123,19 @@ ws ::= [ \t\n\r]*
         else:
             logger.error("no model")
             return None
-        
-        # Retry при невалидном ответе
+
         if result is None and retry_count < self.max_retries:
             logger.warning(f"retry {retry_count + 1}/{self.max_retries}: invalid JSON response")
-            # Добавляем указание на ошибку в промпт для retry
             retry_system = system_text + "\n\nIMPORTANT: Your previous response was not valid JSON. Please return ONLY valid JSON object."
             return self._call_model(retry_system, user_text, retry_count + 1)
-        
+
         return result
 
     def _call_local_model(self, system_text: str, user_text: str) -> Optional[Dict[str, Any]]:
         """Llama 3 Instruct через llama-cpp-python."""
         try:
             start_time = time.time()
-            
+
             prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
 {system_text}<|eot_id|><|start_header_id|>user<|end_header_id|>
@@ -163,7 +143,7 @@ ws ::= [ \t\n\r]*
 {user_text}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
 
 """
-            
+
             output = self.local_model(
                 prompt,
                 max_tokens=1024,
@@ -172,28 +152,33 @@ ws ::= [ \t\n\r]*
                 echo=False,
                 grammar=self.json_grammar
             )
-            
+
             elapsed = time.time() - start_time
             usage = output.get("usage", {}) if isinstance(output, dict) else {}
             total_tokens = usage.get("completion_tokens", 0) if usage else 0
             tokens_per_sec = total_tokens / elapsed if elapsed > 0.001 else 0
-            logger.info(f"[TELEMETRY] local_llm: latency={elapsed:.2f}s, tokens={total_tokens}, tokens/sec={tokens_per_sec:.1f}")
-            
+            logger.info(
+                f"[TELEMETRY] local_llm: latency={elapsed:.2f}s, tokens={total_tokens}, tokens/sec={tokens_per_sec:.1f}")
+
             content = output["choices"][0]["text"].strip()
             if not content:
                 raise ValueError("Empty response from local LLM")
-            
+
             # Fallback если grammar не загружена: модель может вернуть
             # "Here is the JSON: {...}" — вырезаем только JSON часть
             json_start = content.find("{")
             json_end = content.rfind("}") + 1
             if json_start != -1 and json_end > json_start:
                 content = content[json_start:json_end]
-            
-            logger.debug(f"[HISTORY] request: {user_text[:100]}... | response: {content[:100]}...")
-            
+
+            logger.debug(
+                "[HISTORY] local_llm exchange: request_chars=%s response_chars=%s",
+                len(user_text),
+                len(content),
+            )
+
             return json.loads(content)
-            
+
         except json.JSONDecodeError as e:
             logger.error(f"bad json: {e}")
             return None
@@ -205,7 +190,7 @@ ws ::= [ \t\n\r]*
         """Groq Cloud API c принудительным JSON mode."""
         try:
             start_time = time.time()
-            
+
             completion = self.client.chat.completions.create(
                 messages=[
                     {"role": "system", "content": system_text},
@@ -224,13 +209,18 @@ ws ::= [ \t\n\r]*
             except (AttributeError, TypeError):
                 total_tokens = 0
             tokens_per_sec = total_tokens / elapsed if elapsed > 0.001 else 0
-            logger.info(f"[TELEMETRY] groq_api: latency={elapsed:.2f}s, tokens={total_tokens}, tokens/sec={tokens_per_sec:.1f}")
+            logger.info(
+                f"[TELEMETRY] groq_api: latency={elapsed:.2f}s, tokens={total_tokens}, tokens/sec={tokens_per_sec:.1f}")
 
             content = completion.choices[0].message.content
             if not content:
                 raise ValueError("Empty response from LLM")
 
-            logger.debug(f"[HISTORY] request: {user_text[:100]}... | response: {content[:100]}...")
+            logger.debug(
+                "[HISTORY] groq_api exchange: request_chars=%s response_chars=%s",
+                len(user_text),
+                len(content),
+            )
 
             return json.loads(content)
 
@@ -241,10 +231,6 @@ ws ::= [ \t\n\r]*
             logger.error(f"api err: {e}")
             return None
 
-    # -------------------------------------------------------------------------
-    # ВАЛИДАЦИЯ И ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
-    # -------------------------------------------------------------------------
-
     def _validate_iso_date(self, date_str: str) -> bool:
         """ISO-8601 валидация. Python <3.11 не понимает 'Z' как UTC."""
         try:
@@ -253,9 +239,86 @@ ws ::= [ \t\n\r]*
         except (ValueError, TypeError, AttributeError):
             return False
 
-    # -------------------------------------------------------------------------
-    # ОСНОВНЫЕ МЕТОДЫ API
-    # -------------------------------------------------------------------------
+    def _build_user_payload(
+            self,
+            text: str,
+            context: Any,
+            conversation: Any = None,
+            all_context: Optional[str] = None
+    ) -> str:
+        """Единый формат user payload для runtime/training/eval."""
+        if hasattr(context, "model_dump"):
+            context_data = context.model_dump(mode="json")
+        elif isinstance(context, dict):
+            context_data = context
+        else:
+            context_data = {}
+
+        if hasattr(conversation, "model_dump"):
+            conversation_data = conversation.model_dump(mode="json", exclude_none=True)
+        elif isinstance(conversation, dict):
+            conversation_data = {k: v for k, v in conversation.items() if v is not None}
+        else:
+            conversation_data = None
+
+        payload = {"text": text, "context": context_data}
+        if conversation_data:
+            payload["conversation"] = conversation_data
+        if all_context:
+            payload["all_context"] = all_context
+
+        return json.dumps(payload, ensure_ascii=False)
+
+    def _validate_execute_parameters(self, tool_name: ToolName, parameters: Any):
+        """Приводим параметры к строгим схемам там, где они уже определены."""
+        raw_params = (
+            parameters.model_dump(mode="json")
+            if hasattr(parameters, "model_dump")
+            else (parameters or {})
+        )
+
+        if tool_name == ToolName.CREATE_EVENT:
+            params = CreateEventParams(**raw_params)
+            if not self._validate_iso_date(params.start_time):
+                raise ValueError("Invalid create_event start_time")
+            return params
+
+        if tool_name == ToolName.UPDATE_EVENT:
+            params = UpdateEventParams(**raw_params)
+            updates = params.updates
+            if not any([
+                updates.title,
+                updates.start_time,
+                updates.duration_minutes is not None,
+                updates.location,
+                updates.description,
+            ]):
+                raise ValueError("update_event must contain at least one update field")
+            if updates.start_time and not self._validate_iso_date(updates.start_time):
+                raise ValueError("Invalid update_event updates.start_time")
+            return params
+
+        if tool_name == ToolName.DELETE_EVENT:
+            return DeleteEventParams(**raw_params)
+
+        if tool_name == ToolName.FIND_FREE_SLOT:
+            return RankedSlotParams(**raw_params)
+
+        if tool_name == ToolName.SPLIT_TASK:
+            return SplitTaskParams(**raw_params)
+
+        return raw_params if isinstance(raw_params, dict) else {}
+
+    def _validate_ml_response(self, response: MLResponse) -> MLResponse:
+        validated_params = self._validate_execute_parameters(
+            response.tool_name,
+            response.parameters
+        )
+        return MLResponse(
+            tool_name=response.tool_name,
+            reply_text=response.reply_text,
+            parameters=validated_params
+        )
 
     def analyze(self, request: AnalyzeRequest) -> AnalyzeResponse:
         """Router: классифицирует намерение и определяет, нужны ли данные из Google Calendar."""
@@ -264,10 +327,16 @@ ws ::= [ \t\n\r]*
             current_time=request.context.current_time,
             timezone=request.context.timezone
         )
+        user_payload = self._build_user_payload(
+            request.text,
+            request.context,
+            request.conversation,
+            request.all_context
+        )
 
         logger.info(f"analyze: {request.text[:40]}")
 
-        raw_data = self._call_model(system_prompt, request.text)
+        raw_data = self._call_model(system_prompt, user_payload)
 
         if not raw_data:
             return self._create_error_response("Ошибка связи с мозгом (API Error).")
@@ -292,13 +361,28 @@ ws ::= [ \t\n\r]*
                 extracted_params = {k: v for k, v in fr.items() if k not in reserved_keys}
                 fr["parameters"] = extracted_params if extracted_params else {}
 
+        elif raw_data.get("requirement") == DataRequirementType.NONE.value:
+            root_reply = raw_data.get("reply_text")
+            root_params = raw_data.get("parameters")
+            if root_params is None:
+                reserved_keys = {"tool_name", "requirement", "data_params", "final_response", "reply_text",
+                                 "parameters"}
+                extracted_params = {k: v for k, v in raw_data.items() if k not in reserved_keys}
+                root_params = extracted_params if extracted_params else {}
+            if root_reply is not None or root_params is not None:
+                raw_data["final_response"] = {
+                    "tool_name": raw_data.get("tool_name", "general_chat"),
+                    "reply_text": root_reply or "Принято. Обрабатываю запрос.",
+                    "parameters": root_params or {}
+                }
+
         try:
             response = AnalyzeResponse(**raw_data)
 
-            if response.requirement == DataRequirementType.SLOTS:
+            if response.requirement in {DataRequirementType.SLOTS, DataRequirementType.EVENTS}:
                 if not response.data_params:
-                    logger.warning("slots requested but no dates")
-                    raise ValueError("Requirement is SLOTS but data_params is missing")
+                    logger.warning("calendar data requested but no dates")
+                    raise ValueError("Requirement needs data_params but they are missing")
 
                 # Проверяем, что даты валидные (LLM иногда генерит мусор)
                 if not (self._validate_iso_date(response.data_params.start) and
@@ -306,12 +390,20 @@ ws ::= [ \t\n\r]*
                     logger.warning(f"bad dates: {response.data_params}")
                     raise ValueError("Invalid ISO date format generated by LLM")
 
+            if response.requirement == DataRequirementType.NONE:
+                if not response.final_response:
+                    response.final_response = MLResponse(
+                        tool_name=response.tool_name,
+                        reply_text="Принято. Обрабатываю запрос.",
+                        parameters={}
+                    )
+                response.final_response = self._validate_ml_response(response.final_response)
+
             return response
 
         except (ValidationError, ValueError) as e:
             logger.warning(f"validation err: {e}")
 
-            # Просим LLM сформулировать уточняющий вопрос на основе исходного запроса
             clarify_prompt = f"""
 {p.CHAT_PERSONA}
 TASK: The user's request could not be processed due to missing or invalid parameters.
@@ -321,9 +413,9 @@ Error: {str(e)[:100]}
 Generate a friendly clarification request in Russian. Ask the user to rephrase or provide more details.
 OUTPUT JSON: {{ "reply_text": "..." }}
 """
-            clarify_resp = self._call_model(clarify_prompt, request.text)
-            reply_text = (clarify_resp.get("reply_text") if clarify_resp 
-                         else "Не совсем понял. Можете уточнить ваш запрос?")
+            clarify_resp = self._call_model(clarify_prompt, user_payload)
+            reply_text = (clarify_resp.get("reply_text") if clarify_resp
+                          else "Не совсем понял. Можете уточнить ваш запрос?")
 
             return AnalyzeResponse(
                 tool_name=ToolName.CLARIFICATION_NEEDED,
@@ -340,7 +432,6 @@ OUTPUT JSON: {{ "reply_text": "..." }}
         logger.info(f"exec: {request.tool_name}")
 
         try:
-            # Диспетчеризация по типу инструмента
             if request.tool_name == ToolName.FIND_FREE_SLOT:
                 return self._handle_find_slot(request)
 
@@ -352,6 +443,9 @@ OUTPUT JSON: {{ "reply_text": "..." }}
 
             if request.tool_name == ToolName.UPDATE_EVENT:
                 return self._handle_update_event(request)
+
+            if request.tool_name == ToolName.DELETE_EVENT:
+                return self._handle_delete_event(request)
 
             return MLResponse(
                 tool_name=ToolName.GENERAL_CHAT,
@@ -367,14 +461,16 @@ OUTPUT JSON: {{ "reply_text": "..." }}
                 parameters={}
             )
 
-    # -------------------------------------------------------------------------
-    # ОБРАБОТЧИКИ ИНСТРУМЕНТОВ
-    # -------------------------------------------------------------------------
-
     def _handle_find_slot(self, request: ExecuteRequest) -> MLResponse:
         """ML-ранжирование свободных слотов и генерация человечного ответа."""
         slots = request.fetched_slots or []
         ranked = self.ranker.rank_slots(slots, request.context)
+        user_payload = self._build_user_payload(
+            request.text,
+            request.context,
+            request.conversation,
+            request.all_context
+        )
 
         if not ranked:
             return MLResponse(
@@ -392,22 +488,28 @@ OUTPUT JSON: {{ "reply_text": "..." }}
             alt_slot_time=alt_time
         )
 
-        llm_resp = self._call_model(prompt, request.text)
+        llm_resp = self._call_model(prompt, user_payload)
         reply = llm_resp.get("reply_text",
                              f"Предлагаю время: {best_time}.") if llm_resp else f"Лучшее время: {best_time}"
 
-        return MLResponse(
+        return self._validate_ml_response(MLResponse(
             tool_name=ToolName.FIND_FREE_SLOT,
             reply_text=reply,
             parameters=RankedSlotParams(
-                ranked_slots=ranked[:3],  # Возвращаем топ-3
+                ranked_slots=ranked[:3],
                 reasoning="Selected by AI Ranking (Work hours priority)"
             )
-        )
+        ))
 
     def _handle_summarize(self, request: ExecuteRequest) -> MLResponse:
         """LLM-саммари событий календаря."""
         events = request.fetched_events or []
+        user_payload = self._build_user_payload(
+            request.text,
+            request.context,
+            request.conversation,
+            request.all_context
+        )
         events_str = json.dumps([
             {"title": e.title, "start": e.start} for e in events
         ], ensure_ascii=False)
@@ -418,7 +520,7 @@ OUTPUT JSON: {{ "reply_text": "..." }}
             events_json=events_str
         )
 
-        raw_data = self._call_model(prompt, request.text)
+        raw_data = self._call_model(prompt, user_payload)
         reply = raw_data.get("reply_text", "События проанализированы.") if raw_data else "Готово."
 
         return MLResponse(
@@ -430,6 +532,12 @@ OUTPUT JSON: {{ "reply_text": "..." }}
     def _handle_update_event(self, request: ExecuteRequest) -> MLResponse:
         """LLM-определение какое событие изменить и как."""
         events = request.fetched_events or []
+        user_payload = self._build_user_payload(
+            request.text,
+            request.context,
+            request.conversation,
+            request.all_context
+        )
 
         if not events:
             return MLResponse(
@@ -439,16 +547,24 @@ OUTPUT JSON: {{ "reply_text": "..." }}
             )
 
         events_str = json.dumps([
-            {"id": e.id, "title": e.title, "start": e.start, "end": e.end} for e in events
+            {
+                "id": e.id,
+                "title": e.title,
+                "start": e.start,
+                "end": e.end,
+                "location": e.location,
+                "description": e.description,
+            }
+            for e in events
         ], ensure_ascii=False)
-        
+
         prompt = p.UPDATE_EVENT_PROMPT.format(
             persona=p.CHAT_PERSONA,
             user_text=request.text,
             events_json=events_str
         )
 
-        raw_data = self._call_model(prompt, request.text)
+        raw_data = self._call_model(prompt, user_payload)
 
         if raw_data:
             reply = raw_data.get("reply_text", "Готово, событие обновлено.")
@@ -457,11 +573,19 @@ OUTPUT JSON: {{ "reply_text": "..." }}
             reply = "Событие найдено. Что именно нужно изменить?"
             params = {}
 
-        return MLResponse(
-            tool_name=ToolName.UPDATE_EVENT,
-            reply_text=reply,
-            parameters=params
-        )
+        try:
+            return self._validate_ml_response(MLResponse(
+                tool_name=ToolName.UPDATE_EVENT,
+                reply_text=reply,
+                parameters=params
+            ))
+        except (ValidationError, ValueError):
+            logger.warning("update_event bad schema")
+            return MLResponse(
+                tool_name=ToolName.CLARIFICATION_NEEDED,
+                reply_text="Я нашёл событие, но не смог надёжно сформировать обновление. Уточните новое время, название или длительность.",
+                parameters={}
+            )
 
     def _handle_split_task(self, request: ExecuteRequest) -> MLResponse:
         """LLM-разбиение большой задачи на подзадачи с оценкой времени."""
@@ -469,8 +593,14 @@ OUTPUT JSON: {{ "reply_text": "..." }}
             persona=p.CHAT_PERSONA,
             user_text=request.text
         )
+        user_payload = self._build_user_payload(
+            request.text,
+            request.context,
+            request.conversation,
+            request.all_context
+        )
 
-        raw_data = self._call_model(prompt, request.text)
+        raw_data = self._call_model(prompt, user_payload)
 
         try:
             if not raw_data:
@@ -480,11 +610,11 @@ OUTPUT JSON: {{ "reply_text": "..." }}
             params_dict = raw_data.get("parameters", {})
             valid_params = SplitTaskParams(**params_dict)
 
-            return MLResponse(
+            return self._validate_ml_response(MLResponse(
                 tool_name=ToolName.SPLIT_TASK,
                 reply_text=reply,
                 parameters=valid_params
-            )
+            ))
         except ValidationError:
             logger.warning("split_task bad schema")
             return MLResponse(
@@ -492,6 +622,41 @@ OUTPUT JSON: {{ "reply_text": "..." }}
                 reply_text="Я составил план, но возникла ошибка форматирования. Давайте попробуем разбить задачу вручную?",
                 parameters={}
             )
+
+    def _handle_delete_event(self, request: ExecuteRequest) -> MLResponse:
+        """Fallback-обработчик legacy delete_event, когда событие уже найдено gateway."""
+        events = request.fetched_events or []
+
+        if not events:
+            return MLResponse(
+                tool_name=ToolName.CLARIFICATION_NEEDED,
+                reply_text="Не нашёл событие для удаления. Уточните, какое событие нужно удалить?",
+                parameters={}
+            )
+
+        if len(events) > 1:
+            return MLResponse(
+                tool_name=ToolName.CLARIFICATION_NEEDED,
+                reply_text="Нашёл несколько событий. Уточните, какое именно нужно удалить.",
+                parameters={}
+            )
+
+        target = events[0]
+        if not target.id:
+            return MLResponse(
+                tool_name=ToolName.CLARIFICATION_NEEDED,
+                reply_text="Нашёл событие, но не смог определить его идентификатор для удаления. Уточните запрос.",
+                parameters={}
+            )
+
+        title = target.title.strip() if isinstance(target.title, str) else ""
+        reply = f'Принято. Удаляю событие "{title}".' if title else "Принято. Удаляю событие."
+
+        return self._validate_ml_response(MLResponse(
+            tool_name=ToolName.DELETE_EVENT,
+            reply_text=reply,
+            parameters=DeleteEventParams(event_id=target.id)
+        ))
 
     def _create_error_response(self, msg: str) -> AnalyzeResponse:
         """Формируем стандартный ответ об ошибке"""
