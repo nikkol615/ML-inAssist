@@ -13,15 +13,27 @@ STYLE GUIDELINES:
 - Constraint: Do not use Markdown (bold/italic) in the `assistant_message` or legacy `reply_text`.
 """
 
+PROMPT_CACHE_VERSION = "runtime-context-v1"
+
+RUNTIME_CONTEXT_PROMPT = """
+RUNTIME CONTEXT:
+- Current time: {current_time}
+- User timezone: {timezone}
+
+Use this runtime context together with the JSON payload context. If they conflict, trust the JSON payload context.
+"""
+
+DYNAMIC_INPUT_PROMPT = """
+DYNAMIC INPUT:
+{dynamic_input_json}
+"""
+
 STEP_SYSTEM_PROMPT = """
 {persona}
 
 TASK:
 You are not a simple intent router. You are the controller of a calendar agent.
 Your job is to decide exactly one NEXT STEP for the gateway.
-
-CURRENT TIME: {current_time}
-USER TIMEZONE: {timezone}
 
 INPUT FORMAT:
 The user payload is a JSON object with:
@@ -42,6 +54,7 @@ HOW TO READ STATE:
 4. `working_state` = the current plan and unresolved entities.
 5. `all_context` is only a fallback helper, not the source of truth.
 6. `completed_actions` and `tool_observations` accumulate across the current task, so prefer the latest relevant observation instead of restarting the task.
+7. Current time and timezone are provided in the runtime context block before the JSON payload.
 
 IMPORTANT CONTEXT RULES:
 - Prefer structured state over raw history.
@@ -220,9 +233,6 @@ ROUTER_SYSTEM_PROMPT = """
 TASK:
 Analyze the current user request and return exactly one next action in strict JSON.
 
-CURRENT TIME: {current_time}
-USER TIMEZONE: {timezone}
-
 INPUT FORMAT:
 The user payload is a JSON object with:
 - `text`: current user message
@@ -237,6 +247,7 @@ HOW TO USE CONTEXT:
    to resolve short follow-up messages.
 4. Use `all_context` only as a fallback when structured context is missing or incomplete.
 5. If `conversation` and `all_context` disagree, trust `conversation`.
+6. Current time and timezone are provided in the runtime context block before the JSON payload.
 
 FOLLOW-UP RULES:
 - Short replies such as "нет, на 10 надо", "не это", "вторую", "оставь время", "только переименуй",
@@ -335,11 +346,9 @@ OUTPUT FORMAT (JSON ONLY, NO EXTRA TEXT):
 SUMMARIZE_PROMPT = """
 {persona}
 TASK: Summarize the user's schedule based on the provided list of events.
-INPUT:
-User Request: "{user_text}"
-Events List: {events_json}
 
 INSTRUCTIONS:
+- Read `dynamic_input.user_request` and `dynamic_input.events` from the runtime context block.
 - Group events logically.
 - If list is empty, say "У вас нет событий".
 - Keep it short.
@@ -349,10 +358,9 @@ OUTPUT JSON: {{ "reply_text": "..." }}
 SLOT_FOUND_PROMPT = """
 {persona}
 TASK: Present the best found slots to the user.
-BEST SLOT: {best_slot_time}
-ALTERNATIVE: {alt_slot_time}
 
 INSTRUCTIONS:
+- Read `dynamic_input.best_slot_time` and `dynamic_input.alt_slot_time` from the runtime context block.
 - Politely suggest the best slot.
 - Ask for confirmation.
 OUTPUT JSON: {{ "reply_text": "..." }}
@@ -361,24 +369,23 @@ OUTPUT JSON: {{ "reply_text": "..." }}
 SPLIT_TASK_PROMPT = """
 {persona}
 TASK: Break down a complex task into smaller subtasks.
-INPUT: "{user_text}"
 
 INSTRUCTIONS:
-1. Create 3-5 subtasks.
-2. Estimate duration.
-3. JSON Output: {{ "reply_text": "...", "parameters": {{ "main_task": "...", "subtasks": [{{ "title": "...", "duration_minutes": 30 }}] }} }}
+1. Read the task from `dynamic_input.user_request` or from the JSON payload `text`.
+2. Create 3-5 subtasks.
+3. Estimate duration.
+4. JSON Output: {{ "reply_text": "...", "parameters": {{ "main_task": "...", "subtasks": [{{ "title": "...", "duration_minutes": 30 }}] }} }}
 """
 
 UPDATE_EVENT_PROMPT = """
 {persona}
 TASK: Help user update an existing calendar event.
-INPUT: "{user_text}"
-EXISTING EVENTS: {events_json}
 
 INSTRUCTIONS:
-1. Identify which event the user wants to update.
-2. Determine what changes they want (time, title, duration, location, description).
-3. If the user message is short or refers to "this/that/it", use `conversation` and `all_context` from the user payload to resolve what they mean.
-4. Return parameters in the exact schema below.
+1. Read `dynamic_input.user_request` and `dynamic_input.events` from the runtime context block.
+2. Identify which event the user wants to update.
+3. Determine what changes they want (time, title, duration, location, description).
+4. If the user message is short or refers to "this/that/it", use `conversation` and `all_context` from the user payload to resolve what they mean.
+5. Return parameters in the exact schema below.
 OUTPUT JSON: {{ "reply_text": "...", "parameters": {{ "event_id": "...", "updates": {{ "title": "...", "start_time": "ISO", "duration_minutes": 60, "location": "...", "description": "..." }} }} }}
 """

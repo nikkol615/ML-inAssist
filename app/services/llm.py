@@ -9,7 +9,9 @@ import json
 import os
 import logging
 import time
+import hashlib
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, Any, Optional
 
 try:
@@ -21,6 +23,11 @@ try:
     from llama_cpp import Llama
 except ImportError:
     Llama = None
+
+try:
+    from llama_cpp import LlamaDiskCache
+except ImportError:
+    LlamaDiskCache = None
 
 from pydantic import ValidationError
 
@@ -41,6 +48,8 @@ class LLMService:
         self.use_local = os.getenv("USE_LOCAL_LLM", "false").lower() == "true"
         self.local_model = None
         self.client = None
+        self.prompt_cache_enabled = False
+        self.prompt_cache_dir: Optional[Path] = None
 
         if self.use_local:
             model_path = os.getenv(
@@ -68,6 +77,7 @@ class LLMService:
                     )
                     load_time = time.time() - start_time
                     logger.info(f"LLM model loaded successfully in {load_time:.1f}s")
+                    self._configure_prompt_cache(model_path)
                 except Exception as e:
                     logger.error(f"LLM load failed: {e}")
         else:
@@ -112,14 +122,148 @@ ws ::= [ \t\n\r]*
                 logger.info("JSON grammar loaded")
             except Exception as e:
                 logger.warning(f"JSON grammar failed: {e}, using fallback")
+            self._warm_prompt_cache()
 
-    def _call_model(self, system_text: str, user_text: str, retry_count: int = 0) -> Optional[Dict[str, Any]]:
+    def _prompt_cache_requested(self) -> bool:
+        value = os.getenv("LLAMA_PROMPT_CACHE", "true").strip().lower()
+        return value not in {"0", "false", "no", "off"}
+
+    def _prompt_cache_capacity_bytes(self) -> int:
+        raw_value = os.getenv("LLAMA_CACHE_SIZE_BYTES", str(1024 ** 3))
+        try:
+            return max(int(raw_value), 64 * 1024 * 1024)
+        except ValueError:
+            return 1024 ** 3
+
+    def _prompt_cache_root(self) -> Path:
+        configured = os.getenv("LLAMA_CACHE_DIR")
+        if configured:
+            return Path(configured)
+
+        data_root = Path("/app/data") if Path("/app/data").exists() else Path("data")
+        return data_root / "llama_cache"
+
+    def _model_cache_key(self, model_path: str) -> str:
+        resolved_path = os.path.abspath(model_path)
+        try:
+            stat = os.stat(resolved_path)
+            signature = (
+                f"{resolved_path}|{stat.st_size}|{int(stat.st_mtime)}|"
+                f"{p.PROMPT_CACHE_VERSION}"
+            )
+        except OSError:
+            signature = f"{resolved_path}|{p.PROMPT_CACHE_VERSION}"
+        return hashlib.sha256(signature.encode("utf-8")).hexdigest()[:16]
+
+    def _configure_prompt_cache(self, model_path: str) -> None:
+        """Attach llama.cpp disk cache scoped to the current model file."""
+        if not self._prompt_cache_requested():
+            logger.info("LLM prompt cache disabled")
+            return
+        if LlamaDiskCache is None:
+            logger.warning("LlamaDiskCache is not available; prompt cache disabled")
+            return
+
+        try:
+            cache_dir = self._prompt_cache_root() / self._model_cache_key(model_path)
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            cache = LlamaDiskCache(
+                cache_dir=str(cache_dir),
+                capacity_bytes=self._prompt_cache_capacity_bytes(),
+            )
+            self.local_model.set_cache(cache)
+            self.prompt_cache_dir = cache_dir
+            self.prompt_cache_enabled = True
+            logger.info(f"LLM prompt cache enabled: {cache_dir}")
+        except Exception as exc:
+            self.prompt_cache_enabled = False
+            self.prompt_cache_dir = None
+            logger.warning(f"LLM prompt cache setup failed: {exc}")
+
+    @staticmethod
+    def _format_llama_prompt(system_text: str, user_text: str) -> str:
+        return f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+{system_text}<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+{user_text}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+"""
+
+    def build_runtime_context(self, context: Any, dynamic_input: Optional[Dict[str, Any]] = None) -> str:
+        if hasattr(context, "model_dump"):
+            context_data = context.model_dump(mode="json")
+        elif isinstance(context, dict):
+            context_data = context
+        else:
+            context_data = {}
+
+        parts = [
+            p.RUNTIME_CONTEXT_PROMPT.format(
+                current_time=context_data.get("current_time") or "",
+                timezone=context_data.get("timezone") or "UTC",
+            ).strip()
+        ]
+
+        if dynamic_input is not None:
+            parts.append(
+                p.DYNAMIC_INPUT_PROMPT.format(
+                    dynamic_input_json=json.dumps(
+                        {"dynamic_input": dynamic_input},
+                        ensure_ascii=False,
+                    )
+                ).strip()
+            )
+
+        return "\n\n".join(part for part in parts if part)
+
+    @staticmethod
+    def _build_model_user_text(user_text: str, runtime_context: Optional[str]) -> str:
+        runtime_context = (runtime_context or "").strip()
+        if not runtime_context:
+            return user_text
+        return f"{runtime_context}\n\nUSER PAYLOAD:\n{user_text}"
+
+    def _warm_prompt_cache(self) -> None:
+        """Preload stable router and step prompt prefixes into the llama.cpp cache."""
+        if not (self.use_local and self.local_model and self.prompt_cache_enabled):
+            return
+
+        try:
+            runtime_context = self.build_runtime_context(
+                {"current_time": "", "timezone": "UTC"},
+                dynamic_input={},
+            )
+            warm_user_text = self._build_model_user_text("{}", runtime_context)
+            for system_prompt in (
+                p.ROUTER_SYSTEM_PROMPT.format(persona=p.CHAT_PERSONA),
+                p.STEP_SYSTEM_PROMPT.format(persona=p.CHAT_PERSONA),
+            ):
+                self.local_model(
+                    self._format_llama_prompt(system_prompt, warm_user_text),
+                    max_tokens=1,
+                    temperature=0.0,
+                    stop=["<|eot_id|>", "<|end_of_text|>"],
+                    echo=False,
+                )
+            logger.info("LLM prompt cache warmed")
+        except Exception as exc:
+            logger.warning(f"LLM prompt cache warmup failed: {exc}")
+
+    def _call_model(
+            self,
+            system_text: str,
+            user_text: str,
+            retry_count: int = 0,
+            runtime_context: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
         result = None
+        model_user_text = self._build_model_user_text(user_text, runtime_context)
 
         if self.use_local and self.local_model:
-            result = self._call_local_model(system_text, user_text)
+            result = self._call_local_model(system_text, model_user_text)
         elif self.client:
-            result = self._call_groq_api(system_text, user_text)
+            result = self._call_groq_api(system_text, model_user_text)
         else:
             logger.error("no model")
             return None
@@ -127,7 +271,12 @@ ws ::= [ \t\n\r]*
         if result is None and retry_count < self.max_retries:
             logger.warning(f"retry {retry_count + 1}/{self.max_retries}: invalid JSON response")
             retry_system = system_text + "\n\nIMPORTANT: Your previous response was not valid JSON. Please return ONLY valid JSON object."
-            return self._call_model(retry_system, user_text, retry_count + 1)
+            return self._call_model(
+                retry_system,
+                user_text,
+                retry_count + 1,
+                runtime_context=runtime_context,
+            )
 
         return result
 
@@ -136,13 +285,7 @@ ws ::= [ \t\n\r]*
         try:
             start_time = time.time()
 
-            prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
-
-{system_text}<|eot_id|><|start_header_id|>user<|end_header_id|>
-
-{user_text}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
-
-"""
+            prompt = self._format_llama_prompt(system_text, user_text)
 
             output = self.local_model(
                 prompt,
@@ -323,9 +466,7 @@ ws ::= [ \t\n\r]*
     def analyze(self, request: AnalyzeRequest) -> AnalyzeResponse:
         """Router: классифицирует намерение и определяет, нужны ли данные из Google Calendar."""
         system_prompt = p.ROUTER_SYSTEM_PROMPT.format(
-            persona=p.CHAT_PERSONA,
-            current_time=request.context.current_time,
-            timezone=request.context.timezone
+            persona=p.CHAT_PERSONA
         )
         user_payload = self._build_user_payload(
             request.text,
@@ -333,10 +474,11 @@ ws ::= [ \t\n\r]*
             request.conversation,
             request.all_context
         )
+        runtime_context = self.build_runtime_context(request.context)
 
         logger.info(f"analyze: {request.text[:40]}")
 
-        raw_data = self._call_model(system_prompt, user_payload)
+        raw_data = self._call_model(system_prompt, user_payload, runtime_context=runtime_context)
 
         if not raw_data:
             return self._create_error_response("Ошибка связи с мозгом (API Error).")
@@ -413,7 +555,7 @@ Error: {str(e)[:100]}
 Generate a friendly clarification request in Russian. Ask the user to rephrase or provide more details.
 OUTPUT JSON: {{ "reply_text": "..." }}
 """
-            clarify_resp = self._call_model(clarify_prompt, user_payload)
+            clarify_resp = self._call_model(clarify_prompt, user_payload, runtime_context=runtime_context)
             reply_text = (clarify_resp.get("reply_text") if clarify_resp
                           else "Не совсем понял. Можете уточнить ваш запрос?")
 
@@ -483,12 +625,17 @@ OUTPUT JSON: {{ "reply_text": "..." }}
         alt_time = ranked[1].start.split("T")[-1][:5] if len(ranked) > 1 else "другое"
 
         prompt = p.SLOT_FOUND_PROMPT.format(
-            persona=p.CHAT_PERSONA,
-            best_slot_time=best_time,
-            alt_slot_time=alt_time
+            persona=p.CHAT_PERSONA
+        )
+        runtime_context = self.build_runtime_context(
+            request.context,
+            dynamic_input={
+                "best_slot_time": best_time,
+                "alt_slot_time": alt_time,
+            },
         )
 
-        llm_resp = self._call_model(prompt, user_payload)
+        llm_resp = self._call_model(prompt, user_payload, runtime_context=runtime_context)
         reply = llm_resp.get("reply_text",
                              f"Предлагаю время: {best_time}.") if llm_resp else f"Лучшее время: {best_time}"
 
@@ -515,12 +662,17 @@ OUTPUT JSON: {{ "reply_text": "..." }}
         ], ensure_ascii=False)
 
         prompt = p.SUMMARIZE_PROMPT.format(
-            persona=p.CHAT_PERSONA,
-            user_text=request.text,
-            events_json=events_str
+            persona=p.CHAT_PERSONA
+        )
+        runtime_context = self.build_runtime_context(
+            request.context,
+            dynamic_input={
+                "user_request": request.text,
+                "events": json.loads(events_str),
+            },
         )
 
-        raw_data = self._call_model(prompt, user_payload)
+        raw_data = self._call_model(prompt, user_payload, runtime_context=runtime_context)
         reply = raw_data.get("reply_text", "События проанализированы.") if raw_data else "Готово."
 
         return MLResponse(
@@ -559,12 +711,17 @@ OUTPUT JSON: {{ "reply_text": "..." }}
         ], ensure_ascii=False)
 
         prompt = p.UPDATE_EVENT_PROMPT.format(
-            persona=p.CHAT_PERSONA,
-            user_text=request.text,
-            events_json=events_str
+            persona=p.CHAT_PERSONA
+        )
+        runtime_context = self.build_runtime_context(
+            request.context,
+            dynamic_input={
+                "user_request": request.text,
+                "events": json.loads(events_str),
+            },
         )
 
-        raw_data = self._call_model(prompt, user_payload)
+        raw_data = self._call_model(prompt, user_payload, runtime_context=runtime_context)
 
         if raw_data:
             reply = raw_data.get("reply_text", "Готово, событие обновлено.")
@@ -590,8 +747,7 @@ OUTPUT JSON: {{ "reply_text": "..." }}
     def _handle_split_task(self, request: ExecuteRequest) -> MLResponse:
         """LLM-разбиение большой задачи на подзадачи с оценкой времени."""
         prompt = p.SPLIT_TASK_PROMPT.format(
-            persona=p.CHAT_PERSONA,
-            user_text=request.text
+            persona=p.CHAT_PERSONA
         )
         user_payload = self._build_user_payload(
             request.text,
@@ -599,8 +755,12 @@ OUTPUT JSON: {{ "reply_text": "..." }}
             request.conversation,
             request.all_context
         )
+        runtime_context = self.build_runtime_context(
+            request.context,
+            dynamic_input={"user_request": request.text},
+        )
 
-        raw_data = self._call_model(prompt, user_payload)
+        raw_data = self._call_model(prompt, user_payload, runtime_context=runtime_context)
 
         try:
             if not raw_data:

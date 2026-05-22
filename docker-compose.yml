@@ -10,8 +10,8 @@ services:
     command:
       - |
         set -e
-        MODEL_FILE="/models/Meta-Llama-3-8B-Instruct.Q4_K_M.gguf"
-        MODEL_URL="https://huggingface.co/bartowski/Meta-Llama-3-8B-Instruct-GGUF/resolve/main/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf"
+        MODEL_FILE="/models/adapter_step_newtrain_full_learn_Q4_K_M.gguf"
+        MODEL_URL="https://huggingface.co/gdgewgwe/adapter_step_newtrain_full_learn_Q4_K_M.gguf/resolve/main/adapter_step_newtrain_full_learn_Q4_K_M.gguf"
         
         mkdir -p /models
         
@@ -36,7 +36,7 @@ services:
     environment:
       # Local LLM Mode (Llama) - требует 8GB+ RAM
       - USE_LOCAL_LLM=true
-      - LOCAL_MODEL_PATH=/app/models/Meta-Llama-3-8B-Instruct.Q4_K_M.gguf
+      - LOCAL_MODEL_PATH=/app/models/adapter_step_newtrain_full_learn_Q4_K_M.gguf
       
       # API Mode (Groq)
       # - GROQ_API_KEY=${GROQ_API_KEY}
@@ -61,9 +61,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 8G
+          memory: 12G
         reservations:
-          memory: 4G
+          memory: 8G
 
 volumes:
   whisper_cache:

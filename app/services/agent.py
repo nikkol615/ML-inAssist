@@ -724,13 +724,12 @@ class AgentService:
 
         system_prompt = p.STEP_SYSTEM_PROMPT.format(
             persona=p.CHAT_PERSONA,
-            current_time=request.context.current_time,
-            timezone=request.context.timezone,
         )
         user_payload = self._build_step_payload(request, state_for_prompt)
+        runtime_context = self.llm.build_runtime_context(request.context)
 
         logger.info(f"step: {request.text[:60] if request.text else '[no new text]'}")
-        raw_data = self.llm._call_model(system_prompt, user_payload)
+        raw_data = self.llm._call_model(system_prompt, user_payload, runtime_context=runtime_context)
 
         if not raw_data:
             return self._fallback_step_response(
