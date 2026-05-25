@@ -70,7 +70,7 @@ class LLMService:
                     start_time = time.time()
                     self.local_model = Llama(
                         model_path=model_path,
-                        n_ctx=4096,
+                        n_ctx=8192,
                         n_threads=4,
                         n_gpu_layers=0,
                         verbose=False
@@ -182,7 +182,8 @@ ws ::= [ \t\n\r]*
 
     @staticmethod
     def _format_llama_prompt(system_text: str, user_text: str) -> str:
-        return f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+        # llama-cpp добавляет BOS-токен автоматически — не дублируем вручную
+        return f"""<|start_header_id|>system<|end_header_id|>
 
 {system_text}<|eot_id|><|start_header_id|>user<|end_header_id|>
 

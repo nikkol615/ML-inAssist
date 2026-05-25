@@ -6,6 +6,7 @@
 """
 
 import asyncio
+import threading
 import time
 import logging
 import os
@@ -46,26 +47,35 @@ UPLOAD_CHUNK_SIZE = 1024 * 1024
 _asr_service = None
 _llm_service = None
 _agent_service = None
+_llm_lock = threading.Lock()
+_asr_lock = threading.Lock()
+_agent_lock = threading.Lock()
 
 
 def get_asr_service():
     global _asr_service
     if _asr_service is None:
-        _asr_service = ASRService()
+        with _asr_lock:
+            if _asr_service is None:
+                _asr_service = ASRService()
     return _asr_service
 
 
 def get_llm_service():
     global _llm_service
     if _llm_service is None:
-        _llm_service = LLMService()
+        with _llm_lock:
+            if _llm_service is None:
+                _llm_service = LLMService()
     return _llm_service
 
 
 def get_agent_service():
     global _agent_service
     if _agent_service is None:
-        _agent_service = AgentService(get_llm_service())
+        with _agent_lock:
+            if _agent_service is None:
+                _agent_service = AgentService(get_llm_service())
     return _agent_service
 
 
